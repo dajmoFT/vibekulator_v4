@@ -48,6 +48,7 @@
       text-align: center;
       font-size: 1.25rem;
       transition: background 0.2s;
+      user-select: none;
     }
 
     .btn:hover {
@@ -64,7 +65,8 @@
 
   <div class="flex flex-col h-screen justify-between p-6">
     <!-- Główna zawartość -->
-    <div class="flex-grow flex justify-center gap-6 pb-20">
+    <!-- pb-24 zabezpiecza przestrzeń nad paskiem odtwarzacza -->
+    <div class="flex-grow flex justify-center gap-6 pb-24">
       <!-- Kalkulator -->
       <div class="w-[40%] flex flex-col gap-4 justify-center">
         <!-- Pasek wyniku -->
@@ -99,7 +101,7 @@
         </div>
 
         <!-- Pasek do wpisywania funkcji -->
-        <input id="functionInput" type="text" class="input-bar text-white" placeholder="enter function" />
+        <input id="functionInput" type="text" class="input-bar text-white" placeholder="enter function (e.g. y = 2x + 1  lub  x^4 - y^4 = x*y)" />
       </div>
 
       <!-- Wykres -->
@@ -108,7 +110,7 @@
       </div>
     </div>
 
-    <!-- Pasek muzyki -->
+    <!-- Pasek muzyki (1/3 szerokości) -->
     <div class="fixed bottom-2 left-1/2 -translate-x-1/2 w-1/3 bg-black bg-opacity-80 px-4 py-2 flex items-center justify-between rounded-full spotify-player border border-white">
       <div class="flex gap-4 items-center">
         <button onclick="prevTrack()"><<</button>
@@ -120,41 +122,71 @@
   </div>
 
   <script>
+    // ---------- Kalkulator (numeryczny) ----------
     const display = document.getElementById('display');
     const buttons = document.querySelectorAll('.btn');
-    const functionInput = document.getElementById('functionInput');
-    let input = '';
+    let calcInput = '';
+
+    function updateDisplay() {
+      display.textContent = calcInput || '0';
+    }
 
     buttons.forEach(btn => {
       btn.addEventListener('click', () => {
-        const val = btn.textContent;
-        if (val === 'C') input = '';
-        else if (val === '=') {
+        const val = btn.textContent.trim();
+        if (val === 'C') {
+          calcInput = '';
+        } else if (val === '=') {
           try {
-            input = eval(input).toString();
-          } catch {
-            input = 'ERROR';
+            // Użycie math.evaluate zamiast eval:
+            const result = math.evaluate(calcInput);
+            // Jeśli wynik to obiekt typu BigNumber / Complex itp. -> zamiana na string
+            calcInput = (typeof result === 'number' || typeof result === 'string') ? String(result) : math.format(result);
+          } catch (e) {
+            calcInput = 'ERROR';
           }
         } else {
-          input += val;
+          // prosty filtr — dozwolone znaki: cyfry, ., + - * / ^ ( )
+          // pozwalamy też na litery (dla funkcji, jeśli ktoś wpisze), mathjs poradzi sobie przy = czy w funkcji wykresu
+          calcInput += val;
         }
-        display.textContent = input || '0';
+        updateDisplay();
       });
     });
 
+    updateDisplay();
+
+    // ---------- Pomocnicze: wstawianie mnożenia tam gdzie potrzeba ----------
+    // WAŻNE: nie wstawiamy * między nazwami funkcji (np. sin(x) ), tylko:
+    // - liczba + zmienna/funkcja lub '('  -> 2x -> 2*x, 2( -> 2*(
+    // - ')' + liczba/funkcja/'('         -> )2 -> )*2, )( -> )*(
     function insertMultiplication(str) {
-      return str.replace(/(\d)([a-zA-Z])/g, '$1*$2')
-                .replace(/([a-zA-Z])(\d)/g, '$1*$2')
-                .replace(/([a-zA-Z])([a-zA-Z])/g, '$1*$2');
+      return str
+        .replace(/(\d)([a-zA-Z(])/g, '$1*$2')   // 2x or 2sin -> 2*sin
+        .replace(/([a-zA-Z\)])(\d)/g, '$1*$2') // x2 or )2 -> x*2 or )*2
+        .replace(/(\))([a-zA-Z(])/g, '$1*$2')  // )x or )( -> )*x or )*(
+        .replace(/\s+/g, '');
     }
 
+    // ---------- Canvas / wykresy ----------
     const canvas = document.getElementById('graphCanvas');
     const ctx = canvas.getContext('2d');
 
+    let cssW = 0, cssH = 0;
+    const dpr = window.devicePixelRatio || 1;
+    const scale = 20; // pixeli na jednostkę (możesz zmienić)
+    const colors = ['#00ffff', '#ff00ff', '#00ff00', '#ffff00', '#ff7700'];
+
     function resizeCanvas() {
-      canvas.width = canvas.clientWidth;
-      canvas.height = canvas.clientHeight;
+      // ustawiamy rozmiar w device pixels i skalujemy kontekst tak, aby rysować w CSS px
+      cssW = canvas.clientWidth;
+      cssH = canvas.clientHeight;
+      canvas.width = Math.round(cssW * dpr);
+      canvas.height = Math.round(cssH * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // teraz współrzędne w ctx to CSS px
+      renderDefaultMessage();
     }
+
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
 
@@ -162,103 +194,225 @@
       ctx.strokeStyle = 'white';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(0, canvas.height / 2);
-      ctx.lineTo(canvas.width, canvas.height / 2);
-      ctx.moveTo(canvas.width / 2, 0);
-      ctx.lineTo(canvas.width / 2, canvas.height);
+      ctx.moveTo(0, cssH / 2);
+      ctx.lineTo(cssW, cssH / 2);
+      ctx.moveTo(cssW / 2, 0);
+      ctx.lineTo(cssW / 2, cssH);
       ctx.stroke();
 
       ctx.fillStyle = 'white';
       ctx.font = '12px monospace';
-      ctx.fillText('x', canvas.width - 10, canvas.height / 2 - 5);
-      ctx.fillText('y', canvas.width / 2 + 5, 10);
-    }
-
-    // Rozwiązywanie równań i obsługa wielu rozwiązań
-    function solveForYAll(expr, xVal) {
-      // Jeżeli jest y=..., liczymy bezpośrednio
-      if (/y\s*=/.test(expr)) {
-        let rhs = expr.split('=').pop();
-        return [math.evaluate(rhs, { x: xVal })];
-      }
-
-      const equationParts = expr.split('=');
-      if (equationParts.length !== 2) return [];
-
-      const left = equationParts[0];
-      const right = equationParts[1];
-      function F(yVal) {
-        return math.evaluate(left, { x: xVal, y: yVal }) - math.evaluate(right, { x: xVal, y: yVal });
-      }
-
-      let solutions = [];
-      let guesses = [-5, -2, 0, 2, 5]; // różne punkty startowe
-      guesses.forEach(start => {
-        let yGuess = start;
-        for (let i = 0; i < 30; i++) {
-          const fVal = F(yGuess);
-          const h = 1e-6;
-          const derivative = (F(yGuess + h) - F(yGuess - h)) / (2 * h);
-          if (Math.abs(derivative) < 1e-10) break;
-          yGuess = yGuess - fVal / derivative;
-        }
-        if (Math.abs(F(yGuess)) < 1e-4) {
-          if (!solutions.some(s => Math.abs(s - yGuess) < 0.05)) {
-            solutions.push(yGuess);
-          }
-        }
-      });
-      return solutions;
-    }
-
-    function drawFunction(expr) {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      drawAxes();
-      ctx.lineWidth = 2;
-
-      for (let px = 0; px < canvas.width; px++) {
-        const x = (px - canvas.width / 2) / 20;
-        let yValues;
-        try {
-          if (expr.includes('=')) {
-            yValues = solveForYAll(expr, x);
-          } else {
-            yValues = [math.evaluate(expr, { x })];
-          }
-          yValues.forEach(y => {
-            ctx.strokeStyle = ['#00ffff', '#ff00ff', '#00ff00', '#ffff00'][Math.floor(Math.random() * 4)];
-            ctx.beginPath();
-            ctx.lineTo(px, canvas.height / 2 - y * 20);
-            ctx.stroke();
-          });
-        } catch {}
-      }
+      ctx.textAlign = 'left';
+      ctx.fillText('x', cssW - 14, cssH / 2 - 6);
+      ctx.fillText('y', cssW / 2 + 6, 12);
     }
 
     function renderDefaultMessage() {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.clearRect(0, 0, cssW, cssH);
+      drawAxes();
       ctx.fillStyle = 'white';
       ctx.font = '16px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText('enter a function or equation', canvas.width / 2, canvas.height / 2);
+      ctx.fillText('enter a function or equation (e.g. y = 2x + 1  or  x^2 + y^2 = 4)', cssW / 2, cssH / 2);
     }
 
+    // Kompilacja wyrażeń (używamy compile() by przyspieszyć wielokrotne ewaluacje)
+    function compileExpression(expr) {
+      try {
+        return math.parse(expr).compile();
+      } catch (e) {
+        return null;
+      }
+    }
+
+    // Rozwiązywanie równania left = right dla y (zwraca tablicę rozwiązań y dla danego x)
+    function solveForYAllCompiled(leftCompiled, rightCompiled, xVal) {
+      if (!leftCompiled || !rightCompiled) return [];
+
+      function F(yVal) {
+        // zabezpieczamy się przed błędami evaluate
+        try {
+          const l = leftCompiled.evaluate({ x: xVal, y: yVal });
+          const r = rightCompiled.evaluate({ x: xVal, y: yVal });
+          return l - r;
+        } catch (e) {
+          return NaN;
+        }
+      }
+
+      const solutions = [];
+      const guesses = [-10, -5, -3, -1, -0.5, 0, 0.5, 1, 3, 5, 10];
+      const tolF = 1e-4;
+      const tolDistinct = 1e-2;
+      const maxIter = 30;
+
+      guesses.forEach(start => {
+        let y = start;
+        // Newton-Raphson with numeric derivative
+        for (let i = 0; i < maxIter; i++) {
+          const f = F(y);
+          if (!isFinite(f)) break;
+          const h = 1e-4;
+          const fph = F(y + h);
+          const fmh = F(y - h);
+          const deriv = (fph - fmh) / (2 * h);
+          if (!isFinite(deriv) || Math.abs(deriv) < 1e-12) break;
+          y = y - f / deriv;
+        }
+        const fEnd = F(y);
+        if (isFinite(fEnd) && Math.abs(fEnd) < tolF && isFinite(y)) {
+          // deduplikacja
+          const close = solutions.some(s => Math.abs(s - y) < tolDistinct);
+          if (!close) solutions.push(y);
+        }
+      });
+
+      // zwróć uporządkowane rosnąco (żeby gałęzie były spójnie indeksowane)
+      solutions.sort((a, b) => a - b);
+      return solutions;
+    }
+
+    // Dopasowywanie gałęzi: przypisuje bieżące y do indeksów poprzednich gałęzi (lub -1 jeśli brak dopasowania)
+    function matchBranches(prevYs, currYs) {
+      const usedPrev = new Array(prevYs.length).fill(false);
+      const matches = new Array(currYs.length).fill(-1);
+      for (let j = 0; j < currYs.length; j++) {
+        let bestIdx = -1;
+        let bestDist = Infinity;
+        for (let i = 0; i < prevYs.length; i++) {
+          if (usedPrev[i]) continue;
+          const d = Math.abs(prevYs[i] - currYs[j]);
+          if (d < bestDist) { bestDist = d; bestIdx = i; }
+        }
+        // threshold: jeżeli odległość bardzo duża, nie dopasowujemy
+        if (bestIdx !== -1 && bestDist < 80) {
+          matches[j] = bestIdx;
+          usedPrev[bestIdx] = true;
+        } else {
+          matches[j] = -1;
+        }
+      }
+      return matches;
+    }
+
+    // Rysowanie funkcji/równania
+    function drawFunction(rawExpr) {
+      // przygotowanie
+      ctx.clearRect(0, 0, cssW, cssH);
+      drawAxes();
+
+      if (!rawExpr) {
+        renderDefaultMessage();
+        return;
+      }
+
+      const expr = insertMultiplication(rawExpr);
+
+      // rozpoznaj czy to równanie (z '=') czy funkcja y = ...
+      const hasEq = expr.includes('=');
+
+      let leftCompiled = null, rightCompiled = null, funcCompiled = null;
+      if (hasEq) {
+        const parts = expr.split('=');
+        if (parts.length !== 2) { renderDefaultMessage(); return; }
+        const left = parts[0];
+        const right = parts[1];
+        leftCompiled = compileExpression(left);
+        rightCompiled = compileExpression(right);
+        if (!leftCompiled || !rightCompiled) { renderDefaultMessage(); return; }
+      } else {
+        // jeżeli mamy 'y=' na początku usuń ją i kompiluj RHS
+        const eqIndex = expr.indexOf('y=');
+        if (eqIndex === 0) {
+          const rhs = expr.slice(2);
+          funcCompiled = compileExpression(rhs);
+        } else {
+          funcCompiled = compileExpression(expr);
+        }
+        if (!funcCompiled) { renderDefaultMessage(); return; }
+      }
+
+      // przebiegamy po pikselach szerokości i rysujemy małe segmenty łączące px-1 -> px
+      const centerX = cssW / 2;
+      const centerY = cssH / 2;
+      let prevPx = null;
+      let prevYs = []; // w pikselach (CSS px, nie przeskalowane)
+      for (let px = 0; px < Math.floor(cssW); px++) {
+        const xVal = (px - centerX) / scale;
+        let currYsVals = [];
+
+        try {
+          if (hasEq) {
+            const sols = solveForYAllCompiled(leftCompiled, rightCompiled, xVal);
+            // przekształć do współrzędnej pikselowej
+            currYsVals = sols
+              .map(yv => {
+                const py = centerY - yv * scale;
+                if (!isFinite(py) || isNaN(py)) return null;
+                return py;
+              })
+              .filter(v => v !== null && isFinite(v));
+          } else {
+            // funkcja jawna y = f(x)
+            const yv = funcCompiled.evaluate({ x: xVal });
+            if (isFinite(yv)) {
+              const py = centerY - yv * scale;
+              if (isFinite(py)) currYsVals = [py];
+            }
+          }
+        } catch (e) {
+          currYsVals = [];
+        }
+
+        // sortuj rosnąco (ważne by zachować porządek gałęzi)
+        currYsVals.sort((a, b) => a - b);
+
+        if (prevPx !== null && prevYs.length > 0 && currYsVals.length > 0) {
+          // dopasowujemy gałęzie do poprzednich
+          const matches = matchBranches(prevYs, currYsVals);
+          for (let j = 0; j < currYsVals.length; j++) {
+            const matchedPrevIdx = matches[j];
+            const color = colors[j % colors.length];
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 2;
+            if (matchedPrevIdx !== -1) {
+              // rysujemy segment z poprzedniego px do aktualnego px
+              ctx.beginPath();
+              ctx.moveTo(prevPx, prevYs[matchedPrevIdx]);
+              ctx.lineTo(px, currYsVals[j]);
+              ctx.stroke();
+            } else {
+              // nie dopasowano (nowa gałąź) — rysujemy mały punkt jeśli chcesz
+              ctx.beginPath();
+              ctx.arc(px, currYsVals[j], 0.5, 0, Math.PI * 2);
+              ctx.fillStyle = colors[j % colors.length];
+              ctx.fill();
+            }
+          }
+        }
+        // zapamiętaj aktualne jako poprzednie do następnego px
+        prevPx = px;
+        prevYs = currYsVals.slice();
+      }
+    }
+
+    // Obsługa wpisywania funkcji
     functionInput.addEventListener('input', () => {
       const raw = functionInput.value.trim().toLowerCase();
       if (!raw) {
         renderDefaultMessage();
         return;
       }
-      const expr = insertMultiplication(raw);
-      try {
-        drawFunction(expr);
-      } catch {
-        renderDefaultMessage();
-      }
+      drawFunction(raw);
     });
 
-    window.addEventListener('load', renderDefaultMessage);
+    window.addEventListener('load', () => {
+      renderDefaultMessage();
+      // jeśli input zawiera coś przy starcie:
+      if (functionInput.value.trim()) drawFunction(functionInput.value.trim().toLowerCase());
+    });
 
+    // ---------- Player (bez zmian logicznych, tylko wczytywanie iframe) ----------
     const tracks = [
       { title: 'Vaporwave 1 Hour', embed: 'https://www.youtube.com/embed/4xDzrJKXOOY?autoplay=1' },
       { title: 'Lo-Fi Chill Vaporwave Mix', embed: 'https://www.youtube.com/embed/f02mOEt11OQ?autoplay=1' }
